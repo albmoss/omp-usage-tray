@@ -1075,6 +1075,8 @@ namespace OmpUsageTray
         static void Main()
         {
             string root = Path.GetDirectoryName(Application.ExecutablePath);
+            // Launched from omp's project directory; don't keep it locked while the widget runs.
+            Directory.SetCurrentDirectory(root);
             bool relaunch;
             bool created;
             using (var mutex = new Mutex(true, @"Local\omp-usage-tray", out created))
