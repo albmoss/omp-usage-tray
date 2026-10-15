@@ -6,34 +6,38 @@ Antigravity and any other provider that `omp usage` reports limits for.
 
 It starts with the first `omp` session and exits a few seconds after the last one closes.
 
-![Minimal layout in the taskbar](docs/strip_minimal.png)
+![The widget in the taskbar](docs/strip.png)
 
-*Minimal layout (default): provider name, one gauge per window (5h, 7d) with the remaining percentage inside, time to reset below.*
+*Each provider shows both limits at once. The provider's mark sits between two arcs: the left arc and
+the number on the left are the 5-hour window, the right arc and the number on the right the 7-day
+window, with the time until each one resets below. Both arcs fill from the bottom up, so the lower
+side stands out at a glance.*
 
-![Nested layout in the taskbar](docs/strip_nested.png)
+<img src="docs/details.png" alt="Details popup" width="336"> <img src="docs/menu.png" alt="Context menu" width="184">
 
-*Nested layout: outer ring is the 5-hour window, inner ring the 7-day window.*
-
-<img src="docs/details.png" alt="Details popup" width="382"> <img src="docs/menu.png" alt="Context menu" width="142">
-
-*Left click opens Details with every limit, grouped by quota pool. Right click opens the menu.
+*Left click opens Details with what the taskbar does not show: the account, the clock time each
+limit resets at, and the limits behind the two numbers (Antigravity's second quota pool, Codex's
+gpt-reserve). A provider that did not fit on the taskbar shows its percentages here. The switch at
+the top moves the widget between the left and right side of the taskbar. Right click opens the menu.
 Screenshots use made-up example data.*
 
 ## Features
 
-- **Lives in the taskbar**, left of the notification area, like the clock. It is a child window
-  of the taskbar, so it hides with it in fullscreen games and never covers other windows.
+- **Lives in the taskbar**, left of the notification area, like the clock, or at the left edge of a
+  centered taskbar. It is a child window of the taskbar, so it hides with it in fullscreen games and
+  never covers other windows.
 - **Remaining quota, not usage**: 100% means untouched. A window past its reset time counts as
   refilled even before the next data update.
-- **Every provider, automatically.** Known providers use their brand colors (Codex is monochrome:
-  white on a dark taskbar, black on a light one). A provider the widget has never seen gets a
-  stable color from a palette and a readable name (`kimi-code` → "Kimi Code"). Several accounts
-  of one provider show up as "Claude", "Claude 2", …
-- **Fits the space it has.** When the taskbar gets crowded, Nested falls back to Minimal, then
-  providers with the most quota left are hidden first; the ones close to their limit stay.
+- **Every provider, automatically.** Claude, Codex, Antigravity, Gemini CLI and Copilot show their
+  marks in their brand colors (Codex is monochrome: white on a dark taskbar, black on a light one).
+  A provider the widget has never seen gets its initial, a stable color from a palette and a
+  readable name (`kimi-code` → "Kimi Code"). Several accounts of one provider show up as "Claude",
+  "Claude 2", … with the account number on the mark.
+- **Fits the space it has.** When the taskbar gets crowded, providers with the most quota left are
+  hidden first; the ones close to their limit stay, and Details shows the hidden ones in full.
   Details switches to two columns when one would be taller than the screen.
-- **Tray icon** with a single gauge for the provider that is closest to its limit, and a tooltip
-  with every provider's lowest remaining percentage.
+- **Tray icon** with the two arcs of the provider that is closest to its limit, and a tooltip with
+  every provider's lowest remaining percentage.
 - Follows the Windows light/dark taskbar theme and the system DPI scaling.
 
 ## Lightweight by design
@@ -74,11 +78,11 @@ Run `install.cmd` again after pulling updates.
 
 | Action | Result |
 |---|---|
-| Left click on the widget or tray icon | Details popup with every limit, account and reset time |
-| Right click | Menu: Details, Minimal / Nested layout, Quit |
+| Left click on the widget or tray icon | Details popup with every limit, account and reset time, plus the position switch |
+| Right click | Menu: Details, Taskbar position (Left / Right), Quit |
 | Close the last omp session | Widget exits after 5 seconds |
 
-The layout choice is saved in `%LOCALAPPDATA%\omp-usage-tray\layout.txt`.
+The position is saved in `%LOCALAPPDATA%\omp-usage-tray\layout.txt`.
 
 ## How it works
 
@@ -114,6 +118,8 @@ lives only in `%LOCALAPPDATA%\omp-usage-tray\`. The widget makes no network conn
 - Uses the taskbar of the primary display; vertical taskbars hide the strip (the tray icon stays).
 - The free space next to the app buttons is derived from the Start button for a centered taskbar.
   A left-aligned taskbar uses the legacy ReBar rectangle, which Windows 11 may report too small.
+- The Left position is available only on a centered taskbar. The Widgets (weather) button has no window
+  of its own, so the strip skips a fixed 160 px (at 100% scaling) when Widgets is enabled.
 - Providers appear only when `omp usage` reports percentage limits for them; token-only billing
   without windows has nothing to show.
 - The extension relies on omp's usage API (`modelRegistry.authStorage.usage.reports()`); an omp
@@ -126,6 +132,14 @@ uninstall.cmd
 ```
 
 Removes the widget, its data directory and the omp extension.
+
+## Provider marks
+
+The marks are drawn from SVG path data: Claude, Gemini and GitHub Copilot from
+[Simple Icons](https://simpleicons.org) 16.35.0, OpenAI from Simple Icons 15.22.0 (CC0), and
+Antigravity from [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Google_Antigravity_Logo.svg).
+They are trademarks of their owners and appear only to show which provider a number belongs to. This
+project is not affiliated with or endorsed by Anthropic, OpenAI, Google or GitHub.
 
 ## License
 

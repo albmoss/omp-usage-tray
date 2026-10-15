@@ -1,7 +1,8 @@
 // Taskbar widget for omp provider usage limits.
 // Data comes from usage.tsv, written by the omp extension in extension/usage-tray.ts.
 // Lifetime: every omp process registers sessions/<pid>; the widget exits once all of them are gone.
-// Shows remaining quota as horseshoe gauges: a strip embedded in the taskbar next to the tray, plus a tray icon.
+// Shows remaining quota as bracket gauges (left arc 5h, right arc 7d) around each provider's mark: a strip
+// embedded in the taskbar next to the tray, plus a tray icon.
 // Builds with the C# 5 compiler bundled in .NET Framework 4.x (see install.cmd).
 using System;
 using System.Collections.Generic;
@@ -211,37 +212,381 @@ namespace OmpUsageTray
             return value is int && (int)value == 1;
         }
 
-        /// <summary>Open ring (270°, gap at the bottom) filled clockwise from the lower left to <paramref name="pct"/>.</summary>
-        public static void Horseshoe(Graphics g, RectangleF box, float width, double pct, Color color, Color track)
+        public static Font Pick(string family, string fallback, float size, GraphicsUnit unit)
         {
-            RectangleF ring = RectangleF.Inflate(box, -width / 2, -width / 2);
+            var font = new Font(family, size, unit);
+            if (font.Name == family) return font;
+            font.Dispose();
+            return new Font(fallback, size, unit);
+        }
+
+        public static bool IsShort(LimitRow row)
+        {
+            if (row.DurationMs > 0) return row.DurationMs < 86400000L;
+            return !row.Window.EndsWith("d", StringComparison.Ordinal);
+        }
+
+        public static void Sides(ProviderGroup group, long now, out LimitRow shortRow, out LimitRow longRow)
+        {
+            shortRow = null;
+            longRow = null;
+            foreach (LimitRow row in group.ByWindow(now))
+            {
+                if (IsShort(row)) { if (shortRow == null) shortRow = row; }
+                else if (longRow == null) longRow = row;
+            }
+        }
+
+        public static string Countdown(LimitRow row, long now)
+        {
+            return row.ResetsAt > 0 ? Span(row.ResetsAt - now) : row.Window;
+        }
+
+        public static bool ResetParts(LimitRow row, long now, out string day, out string time, out string suffix)
+        {
+            day = time = suffix = "";
+            if (row.ResetsAt <= now) return false;
+            DateTime at = DateTimeOffset.FromUnixTimeMilliseconds(row.ResetsAt).LocalDateTime;
+            DateTime today = DateTimeOffset.FromUnixTimeMilliseconds(now).LocalDateTime.Date;
+            string pattern = CultureInfo.CurrentCulture.DateTimeFormat.ShortTimePattern;
+            bool designator = pattern.Contains("t");
+            time = at.ToString(designator ? pattern.Replace("t", "").Trim() : pattern, CultureInfo.CurrentCulture);
+            suffix = designator ? at.ToString("tt", CultureInfo.CurrentCulture) : "";
+            if (at.Date != today) day = at.ToString("ddd", CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        public static string ResetsAt(LimitRow row, long now)
+        {
+            if (row.ResetsAt <= 0) return "";
+            string day, time, suffix;
+            if (!ResetParts(row, now, out day, out time, out suffix)) return "refilled";
+            return (day.Length > 0 ? day + " " : "") + time + (suffix.Length > 0 ? " " + suffix : "");
+        }
+    }
+
+    static class Gauge
+    {
+        const float Gap = 16f, Span = 180f - 2 * Gap;
+
+        public static double Remaining(LimitRow row, long now)
+        {
+            return row == null ? double.NaN : row.RemainingPct(now);
+        }
+
+        public static void Brackets(Graphics g, RectangleF box, float stroke, double left, double right, Color color, Color track)
+        {
+            RectangleF ring = RectangleF.Inflate(box, -stroke / 2, -stroke / 2);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var trackPen = new Pen(track, width) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                g.DrawArc(trackPen, ring, 135, 270);
-            float sweep = (float)(270 * Math.Max(0, Math.Min(100, pct)) / 100);
-            if (sweep < 0.5f) return;
-            using (var valuePen = new Pen(color, width) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                g.DrawArc(valuePen, ring, 135, sweep);
+            using (var trackPen = new Pen(track, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var valuePen = new Pen(color, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                if (!double.IsNaN(left)) Side(g, ring, trackPen, valuePen, 90 + Gap, Span, left);
+                if (!double.IsNaN(right)) Side(g, ring, trackPen, valuePen, 90 - Gap, -Span, right);
+            }
+        }
+
+        static void Side(Graphics g, RectangleF ring, Pen track, Pen value, float start, float span, double pct)
+        {
+            g.DrawArc(track, ring, start, span);
+            float sweep = (float)(span * Math.Max(0, Math.Min(100, pct)) / 100);
+            if (Math.Abs(sweep) >= 0.5f) g.DrawArc(value, ring, start, sweep);
+        }
+    }
+
+    static class Brand
+    {
+        sealed class Mark
+        {
+            public RectangleF ViewBox;
+            public GraphicsPath Path;
+        }
+
+        static readonly Dictionary<string, string[]> Sources = new Dictionary<string, string[]>
+        {
+            { "Claude", new[] { "0 0 24 24", "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" } },
+            { "Codex", new[] { "0 0 24 24", "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" } },
+            { "Antigravity", new[] { "8.5 10.5 94 94", "M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445C75.6992 69.7783 79.7825 18.445 55.8659 18.445C31.9492 18.445 36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695C40.1159 81.445 38.9492 59.8617 55.8659 59.8617C72.7825 59.8617 71.6159 81.445 89.6992 93.695Z" } },
+            { "Gemini CLI", new[] { "0 0 24 24", "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" } },
+            { "Copilot", new[] { "0 0 24 24", "M23.922 16.997C23.061 18.492 18.063 22.02 12 22.02 5.937 22.02.939 18.492.078 16.997A.641.641 0 0 1 0 16.741v-2.869a.883.883 0 0 1 .053-.22c.372-.935 1.347-2.292 2.605-2.656.167-.429.414-1.055.644-1.517a10.098 10.098 0 0 1-.052-1.086c0-1.331.282-2.499 1.132-3.368.397-.406.89-.717 1.474-.952C7.255 2.937 9.248 1.98 11.978 1.98c2.731 0 4.767.957 6.166 2.093.584.235 1.077.546 1.474.952.85.869 1.132 2.037 1.132 3.368 0 .368-.014.733-.052 1.086.23.462.477 1.088.644 1.517 1.258.364 2.233 1.721 2.605 2.656a.841.841 0 0 1 .053.22v2.869a.641.641 0 0 1-.078.256Zm-11.75-5.992h-.344a4.359 4.359 0 0 1-.355.508c-.77.947-1.918 1.492-3.508 1.492-1.725 0-2.989-.359-3.782-1.259a2.137 2.137 0 0 1-.085-.104L4 11.746v6.585c1.435.779 4.514 2.179 8 2.179 3.486 0 6.565-1.4 8-2.179v-6.585l-.098-.104s-.033.045-.085.104c-.793.9-2.057 1.259-3.782 1.259-1.59 0-2.738-.545-3.508-1.492a4.359 4.359 0 0 1-.355-.508Zm2.328 3.25c.549 0 1 .451 1 1v2c0 .549-.451 1-1 1-.549 0-1-.451-1-1v-2c0-.549.451-1 1-1Zm-5 0c.549 0 1 .451 1 1v2c0 .549-.451 1-1 1-.549 0-1-.451-1-1v-2c0-.549.451-1 1-1Zm3.313-6.185c.136 1.057.403 1.913.878 2.497.442.544 1.134.938 2.344.938 1.573 0 2.292-.337 2.657-.751.384-.435.558-1.15.558-2.361 0-1.14-.243-1.847-.705-2.319-.477-.488-1.319-.862-2.824-1.025-1.487-.161-2.192.138-2.533.529-.269.307-.437.808-.438 1.578v.021c0 .265.021.562.063.893Zm-1.626 0c.042-.331.063-.628.063-.894v-.02c-.001-.77-.169-1.271-.438-1.578-.341-.391-1.046-.69-2.533-.529-1.505.163-2.347.537-2.824 1.025-.462.472-.705 1.179-.705 2.319 0 1.211.175 1.926.558 2.361.365.414 1.084.751 2.657.751 1.21 0 1.902-.394 2.344-.938.475-.584.742-1.44.878-2.497Z" } },
+        };
+        static readonly Dictionary<string, Mark> cache = new Dictionary<string, Mark>();
+
+        public static string BaseName(string name, out int account)
+        {
+            account = 1;
+            int space = name.LastIndexOf(' '), n;
+            if (space > 0 && int.TryParse(name.Substring(space + 1), NumberStyles.None, CultureInfo.InvariantCulture, out n) && n > 1)
+            {
+                account = n;
+                return name.Substring(0, space);
+            }
+            return name;
+        }
+
+        public static void Draw(Graphics g, string name, RectangleF box, Color color)
+        {
+            int account;
+            string baseName = BaseName(name, out account);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Mark mark = Find(baseName);
+            if (mark != null)
+            {
+                using (var path = (GraphicsPath)mark.Path.Clone())
+                using (var matrix = new Matrix())
+                using (var brush = new SolidBrush(color))
+                {
+                    float k = Math.Min(box.Width / mark.ViewBox.Width, box.Height / mark.ViewBox.Height);
+                    matrix.Translate(box.X + (box.Width - mark.ViewBox.Width * k) / 2, box.Y + (box.Height - mark.ViewBox.Height * k) / 2);
+                    matrix.Scale(k, k);
+                    matrix.Translate(-mark.ViewBox.X, -mark.ViewBox.Y);
+                    path.Transform(matrix);
+                    g.FillPath(brush, path);
+                }
+            }
+            else
+            {
+                string initial = baseName.Length > 0 ? baseName.Substring(0, 1).ToUpperInvariant() : "?";
+                Text(g, initial, box, box.Height * 0.85f, color);
+            }
+            if (account > 1) Badge(g, account, box, color);
+        }
+
+        static void Badge(Graphics g, int account, RectangleF box, Color color)
+        {
+            float d = box.Width * 0.62f;
+            var dot = new RectangleF(box.Right - d * 0.6f, box.Bottom - d * 0.6f, d, d);
+            using (var brush = new SolidBrush(color)) g.FillEllipse(brush, dot);
+            bool bright = color.R * 0.299 + color.G * 0.587 + color.B * 0.114 > 150;
+            Text(g, account > 9 ? "+" : account.ToString(CultureInfo.InvariantCulture), dot, d * 0.8f,
+                bright ? Color.FromArgb(24, 24, 24) : Color.White);
+        }
+
+        static void Text(Graphics g, string text, RectangleF box, float pixels, Color color)
+        {
+            using (Font font = Fmt.Pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold", pixels, GraphicsUnit.Pixel))
+            using (var brush = new SolidBrush(color))
+            using (var format = new StringFormat(StringFormat.GenericTypographic) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                g.DrawString(text, font, brush, box, format);
+        }
+
+        static Mark Find(string baseName)
+        {
+            Mark mark;
+            if (cache.TryGetValue(baseName, out mark)) return mark;
+            string[] source;
+            if (Sources.TryGetValue(baseName, out source))
+            {
+                float[] vb = source[0].Split(' ').Select(v => float.Parse(v, CultureInfo.InvariantCulture)).ToArray();
+                mark = new Mark { ViewBox = new RectangleF(vb[0], vb[1], vb[2], vb[3]), Path = SvgPath.Parse(source[1]) };
+            }
+            cache[baseName] = mark;
+            return mark;
+        }
+    }
+
+    static class SvgPath
+    {
+        public static GraphicsPath Parse(string d)
+        {
+            var path = new GraphicsPath(FillMode.Winding);
+            int pos = 0;
+            char cmd = ' ', prev = ' ';
+            PointF cur = PointF.Empty, start = PointF.Empty, ctrl = PointF.Empty;
+            while (true)
+            {
+                SkipSeparators(d, ref pos);
+                if (pos >= d.Length) break;
+                if (IsCommand(d[pos])) cmd = d[pos++];
+                else if (cmd == ' ') break;
+                bool rel = char.IsLower(cmd);
+                char op = char.ToUpperInvariant(cmd);
+                float ox = rel ? cur.X : 0, oy = rel ? cur.Y : 0;
+                switch (op)
+                {
+                    case 'M':
+                        cur = start = new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos));
+                        path.StartFigure();
+                        cmd = rel ? 'l' : 'L';
+                        break;
+                    case 'L':
+                        cur = Line(path, cur, new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos)));
+                        break;
+                    case 'H':
+                        cur = Line(path, cur, new PointF(ox + Number(d, ref pos), cur.Y));
+                        break;
+                    case 'V':
+                        cur = Line(path, cur, new PointF(cur.X, oy + Number(d, ref pos)));
+                        break;
+                    case 'C':
+                    case 'S':
+                    {
+                        PointF c1 = op == 'C' ? new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos))
+                            : prev == 'C' || prev == 'S' ? Reflect(ctrl, cur) : cur;
+                        PointF c2 = new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos));
+                        PointF end = new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos));
+                        path.AddBezier(cur, c1, c2, end);
+                        ctrl = c2;
+                        cur = end;
+                        break;
+                    }
+                    case 'Q':
+                    case 'T':
+                    {
+                        PointF q = op == 'Q' ? new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos))
+                            : prev == 'Q' || prev == 'T' ? Reflect(ctrl, cur) : cur;
+                        PointF end = new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos));
+                        path.AddBezier(cur, Lerp(cur, q, 2f / 3), Lerp(end, q, 2f / 3), end);
+                        ctrl = q;
+                        cur = end;
+                        break;
+                    }
+                    case 'A':
+                    {
+                        float rx = Number(d, ref pos), ry = Number(d, ref pos), angle = Number(d, ref pos);
+                        bool large = Flag(d, ref pos), sweep = Flag(d, ref pos);
+                        PointF end = new PointF(ox + Number(d, ref pos), oy + Number(d, ref pos));
+                        Arc(path, cur, rx, ry, angle, large, sweep, end);
+                        cur = end;
+                        break;
+                    }
+                    case 'Z':
+                        path.CloseFigure();
+                        cur = start;
+                        cmd = ' ';
+                        break;
+                    default:
+                        return path;
+                }
+                prev = op;
+            }
+            return path;
+        }
+
+        static bool IsCommand(char c)
+        {
+            return "MmLlHhVvCcSsQqTtAaZz".IndexOf(c) >= 0;
+        }
+
+        static void SkipSeparators(string d, ref int pos)
+        {
+            while (pos < d.Length && (d[pos] == ',' || char.IsWhiteSpace(d[pos]))) pos++;
+        }
+
+        static float Number(string d, ref int pos)
+        {
+            SkipSeparators(d, ref pos);
+            int begin = pos;
+            if (pos < d.Length && (d[pos] == '-' || d[pos] == '+')) pos++;
+            bool dot = false;
+            while (pos < d.Length && (char.IsDigit(d[pos]) || (d[pos] == '.' && !dot)))
+            {
+                if (d[pos] == '.') dot = true;
+                pos++;
+            }
+            if (pos < d.Length && (d[pos] == 'e' || d[pos] == 'E'))
+            {
+                pos++;
+                if (pos < d.Length && (d[pos] == '-' || d[pos] == '+')) pos++;
+                while (pos < d.Length && char.IsDigit(d[pos])) pos++;
+            }
+            return float.Parse(d.Substring(begin, pos - begin), NumberStyles.Float, CultureInfo.InvariantCulture);
+        }
+
+        static bool Flag(string d, ref int pos)
+        {
+            SkipSeparators(d, ref pos);
+            return d[pos++] == '1';
+        }
+
+        static PointF Line(GraphicsPath path, PointF from, PointF to)
+        {
+            path.AddLine(from, to);
+            return to;
+        }
+
+        static PointF Reflect(PointF control, PointF about)
+        {
+            return new PointF(2 * about.X - control.X, 2 * about.Y - control.Y);
+        }
+
+        static PointF Lerp(PointF a, PointF b, float t)
+        {
+            return new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+        }
+
+        static void Arc(GraphicsPath path, PointF p0, float rxIn, float ryIn, float angle, bool large, bool sweep, PointF p1)
+        {
+            if (p0 == p1) return;
+            double rx = Math.Abs(rxIn), ry = Math.Abs(ryIn);
+            if (rx == 0 || ry == 0) { path.AddLine(p0, p1); return; }
+            double phi = angle * Math.PI / 180, cos = Math.Cos(phi), sin = Math.Sin(phi);
+            double dx = (p0.X - p1.X) / 2.0, dy = (p0.Y - p1.Y) / 2.0;
+            double x1 = cos * dx + sin * dy, y1 = -sin * dx + cos * dy;
+            double lambda = x1 * x1 / (rx * rx) + y1 * y1 / (ry * ry);
+            if (lambda > 1) { rx *= Math.Sqrt(lambda); ry *= Math.Sqrt(lambda); }
+            double num = rx * rx * ry * ry - rx * rx * y1 * y1 - ry * ry * x1 * x1;
+            double den = rx * rx * y1 * y1 + ry * ry * x1 * x1;
+            double coef = (large == sweep ? -1 : 1) * Math.Sqrt(Math.Max(0, num / den));
+            double cxp = coef * rx * y1 / ry, cyp = -coef * ry * x1 / rx;
+            double cx = cos * cxp - sin * cyp + (p0.X + p1.X) / 2.0, cy = sin * cxp + cos * cyp + (p0.Y + p1.Y) / 2.0;
+            double ux = (x1 - cxp) / rx, uy = (y1 - cyp) / ry, vx = (-x1 - cxp) / rx, vy = (-y1 - cyp) / ry;
+            double theta = Math.Atan2(uy, ux);
+            double delta = Math.Atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+            if (!sweep && delta > 0) delta -= 2 * Math.PI;
+            else if (sweep && delta < 0) delta += 2 * Math.PI;
+            int segments = Math.Max(1, (int)Math.Ceiling(Math.Abs(delta) / (Math.PI / 2) - 1e-9));
+            double step = delta / segments, k = 4.0 / 3 * Math.Tan(step / 4);
+            Func<double, double, PointF> map = (u, v) => new PointF(
+                (float)(cx + rx * u * cos - ry * v * sin), (float)(cy + rx * u * sin + ry * v * cos));
+            for (int i = 0; i < segments; i++)
+            {
+                double a = theta + i * step, b = a + step;
+                double ca = Math.Cos(a), sa = Math.Sin(a), cb = Math.Cos(b), sb = Math.Sin(b);
+                path.AddBezier(i == 0 ? p0 : map(ca, sa), map(ca - k * sa, sa + k * ca), map(cb + k * sb, sb - k * cb),
+                    i == segments - 1 ? p1 : map(cb, sb));
+            }
         }
     }
 
     sealed class UsagePopup : Form
     {
         const int CornerPreference = 33, RoundCorners = 2;
-        static readonly Color Bg = Color.FromArgb(28, 28, 30);
-        static readonly Color Fg = Color.FromArgb(235, 235, 240);
-        static readonly Color Dim = Color.FromArgb(150, 150, 158);
-        static readonly Color Track = Color.FromArgb(55, 55, 60);
-        static readonly Color Edge = Color.FromArgb(60, 60, 66);
+        const TextFormatFlags Line = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix |
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+        static readonly Color Bg = Color.FromArgb(32, 33, 36);
+        static readonly Color CardFill = Color.FromArgb(42, 44, 48);
+        static readonly Color BarTrack = Color.FromArgb(56, 58, 63);
+        static readonly Color ControlFill = Color.FromArgb(23, 24, 26);
+        static readonly Color ControlStroke = Color.FromArgb(42, 43, 46);
+        static readonly Color SelectedFill = Color.FromArgb(58, 60, 64);
+        static readonly Color HoverFill = Color.FromArgb(47, 48, 52);
+        static readonly Color Primary = Color.FromArgb(243, 244, 246);
+        static readonly Color Secondary = Color.FromArgb(180, 184, 192);
+        static readonly Color Tertiary = Color.FromArgb(134, 138, 147);
+        static readonly Color Disabled = Color.FromArgb(78, 80, 86);
 
-        readonly Font headerFont = new Font("Segoe UI Semibold", 9.5f);
-        readonly Font bodyFont = new Font("Segoe UI", 9f);
-        readonly Font smallFont = new Font("Segoe UI", 8f);
+        readonly Font chromeFont = Pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold", 9f);
+        readonly Font nameFont = Pick("Segoe UI Variable Display Semib", "Segoe UI Semibold", 11f);
+        readonly Font bodyFont = Pick("Segoe UI Variable Text", "Segoe UI", 9f);
+        readonly Font smallFont = Pick("Segoe UI Variable Small", "Segoe UI", 8.25f);
+        readonly Font smallStrongFont = Pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold", 8.25f);
+        readonly Font bigFont = Pick("Segoe UI Variable Display Semib", "Segoe UI Semibold", 15f);
+        readonly Font pctFont = Pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold", 9.75f);
+        readonly Font glyphFont = Pick("Segoe Fluent Icons", "Segoe MDL2 Assets", 7.5f);
         readonly System.Windows.Forms.Timer clock = new System.Windows.Forms.Timer { Interval = 30000 };
+        readonly ToolTip tip = new ToolTip { AutoPopDelay = 20000 };
+        readonly Rectangle[] hits = new Rectangle[3];
         Snapshot snap = new Snapshot();
+        Color accent = Color.FromArgb(76, 194, 255);
+        bool placeLeft;
+        int hover = -1;
         int lastHide;
+        int columns = 1;
 
-        public Func<int> SessionCount = () => 0;
+        public Func<bool> Centered = TaskbarStrip.CenteredTaskbar;
+        public Func<ProviderGroup, bool> OnTaskbar = group => true;
+        public event Action<bool> PositionPicked;
 
         public UsagePopup()
         {
@@ -252,6 +597,18 @@ namespace OmpUsageTray
             BackColor = Bg;
             DoubleBuffered = true;
             clock.Tick += (s, e) => Invalidate();
+        }
+
+        static Font Pick(string family, string fallback, float points)
+        {
+            return Fmt.Pick(family, fallback, points, GraphicsUnit.Point);
+        }
+
+        static Color SystemAccent()
+        {
+            var palette = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Accent", "AccentPalette", null) as byte[];
+            if (palette == null || palette.Length < 8) return Color.FromArgb(76, 194, 255);
+            return Color.FromArgb(palette[4], palette[5], palette[6]);
         }
 
         protected override CreateParams CreateParams
@@ -275,16 +632,18 @@ namespace OmpUsageTray
         }
 
         int S(float px) { return (int)Math.Round(px * DeviceDpi / 96f); }
-
-        const int Columns = 4;
-        int PanelW { get { return S(348); } }
-        int PanelGap { get { return S(28); } }
-        int providerColumns = 1;
+        float F(float px) { return px * DeviceDpi / 96f; }
 
         public void SetSnapshot(Snapshot next)
         {
             snap = next;
             if (Visible) { Relayout(); Invalidate(); }
+        }
+
+        public void SetPosition(bool left)
+        {
+            placeLeft = left;
+            if (Visible) Invalidate();
         }
 
         public void Toggle()
@@ -320,92 +679,296 @@ namespace OmpUsageTray
         protected override void OnVisibleChanged(EventArgs e)
         {
             base.OnVisibleChanged(e);
-            if (!Visible) clock.Stop();
+            if (Visible) return;
+            clock.Stop();
+            hover = -1;
+            tip.SetToolTip(this, null);
         }
 
-        int GaugeHeight { get { return S(46) + S(6) + S(16) + S(15); } }
+        int Pad { get { return S(12); } }
+        int Gap { get { return S(8); } }
+        int HeaderH { get { return S(44); } }
+        int CardW { get { return S(312); } }
+        int CardPad { get { return S(14); } }
+        int BigH { get { return S(28); } }
+        int ExtraH { get { return S(24); } }
 
-        int GroupHeight(ProviderGroup group)
+        static List<LimitRow> Extras(ProviderGroup group, long now)
         {
-            return S(24) + (group.Rows.Count + Columns - 1) / Columns * GaugeHeight + S(12);
+            LimitRow shortRow, longRow;
+            Fmt.Sides(group, now, out shortRow, out longRow);
+            return group.Rows.Where(row => row != shortRow && row != longRow).ToList();
         }
 
-        /// <summary>Top-left of each provider panel; each goes into the currently shortest column.</summary>
-        List<Point> Place(int columns, out int contentHeight)
+        int SideHeight(bool shown) { return S(16) + BigH + (shown ? 0 : S(16)); }
+
+        int CardHeight(ProviderGroup group, long now)
         {
-            var heights = new int[columns];
+            int extras = Extras(group, now).Count;
+            return CardPad + S(22) + S(12) + SideHeight(OnTaskbar(group)) + (extras > 0 ? S(14) + S(18) + extras * ExtraH : 0) + CardPad;
+        }
+
+        /// <summary>Top-left of each provider card; each goes into the currently shortest column.</summary>
+        List<Point> Place(int cols, long now, out int contentHeight)
+        {
+            var heights = new int[cols];
             var origins = new List<Point>();
             foreach (ProviderGroup group in snap.Groups)
             {
                 int col = 0;
-                for (int c = 1; c < columns; c++) if (heights[c] < heights[col]) col = c;
-                origins.Add(new Point(col * (PanelW + PanelGap), heights[col]));
-                heights[col] += GroupHeight(group);
+                for (int c = 1; c < cols; c++) if (heights[c] < heights[col]) col = c;
+                origins.Add(new Point(col * (CardW + Gap), heights[col]));
+                heights[col] += CardHeight(group, now) + Gap;
             }
-            contentHeight = snap.Groups.Count == 0 ? S(22) : heights.Max();
+            contentHeight = snap.Groups.Count == 0 ? S(48) : heights.Max() - Gap;
             return origins;
         }
 
-        /// <summary>One provider column; a second one once the list would outgrow the screen.</summary>
+        /// <summary>One column; a second one once the list would outgrow the screen.</summary>
         void Relayout()
         {
-            int pad = S(16), chrome = pad * 2 + S(28), content;
-            int maxHeight = Screen.FromPoint(Cursor.Position).WorkingArea.Height - S(20);
-            Place(1, out content);
-            providerColumns = chrome + content > maxHeight && snap.Groups.Count > 1 ? 2 : 1;
-            Place(providerColumns, out content);
-            int width = pad * 2 + providerColumns * PanelW + (providerColumns - 1) * PanelGap;
-            Size = new Size(width, chrome + content);
+            long now = Snapshot.Now();
+            int maxHeight = Screen.FromPoint(Cursor.Position).WorkingArea.Height - S(20), content;
+            Place(1, now, out content);
+            columns = HeaderH + content + Pad > maxHeight && snap.Groups.Count > 1 ? 2 : 1;
+            Place(columns, now, out content);
+            int width = 2 * Pad + columns * CardW + (columns - 1) * Gap;
+            Size = new Size(width, HeaderH + content + Pad);
+            accent = SystemAccent();
+            hits[2] = new Rectangle(width - S(8) - S(28), S(8), S(28), S(28));
+            int button = S(30), h = S(24), y = S(10);
+            hits[1] = new Rectangle(hits[2].X - S(8) - button, y, button, h);
+            hits[0] = new Rectangle(hits[1].X - button, y, button, h);
+        }
+
+        int Hit(Point p)
+        {
+            for (int i = 0; i < hits.Length; i++) if (hits[i].Contains(p)) return i;
+            return -1;
+        }
+
+        bool HitEnabled(int index) { return index == 1 || index == 2 || (index == 0 && Centered()); }
+
+        string TipFor(int index)
+        {
+            switch (index)
+            {
+                case 0: return Centered() ? "Taskbar position: left edge" : "Left needs a centered taskbar";
+                case 1: return "Taskbar position: right, next to the tray";
+                default: return null;
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             long now = Snapshot.Now();
-            int w = ClientSize.Width, pad = S(16);
-            const TextFormatFlags left = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
-            const TextFormatFlags right = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
-            const TextFormatFlags center = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+            DrawHeader(g, now);
 
-            using (var edge = new Pen(Edge)) g.DrawRectangle(edge, 0, 0, w - 1, ClientSize.Height - 1);
-
+            int content;
+            List<Point> origins = Place(columns, now, out content);
             if (snap.Groups.Count == 0)
-                TextRenderer.DrawText(g, "Waiting for data from omp...", bodyFont, new Rectangle(pad, pad, w - 2 * pad, S(22)), Dim, left);
-
-            int contentHeight;
-            List<Point> origins = Place(providerColumns, out contentHeight);
-            int cellW = PanelW / Columns, ringD = S(46);
-            for (int gi = 0; gi < snap.Groups.Count; gi++)
             {
-                ProviderGroup group = snap.Groups[gi];
-                int x = pad + origins[gi].X, y = pad + origins[gi].Y;
-                Color color = group.ColorOn(false);
-                TextRenderer.DrawText(g, group.Name, headerFont, new Rectangle(x, y, PanelW / 2, S(22)), color, left);
-                TextRenderer.DrawText(g, group.Account, smallFont, new Rectangle(x + PanelW / 2, y, PanelW / 2, S(22)), Dim, right | TextFormatFlags.EndEllipsis);
-                y += S(24);
-                for (int i = 0; i < group.Rows.Count; i++)
-                {
-                    LimitRow row = group.Rows[i];
-                    int cellX = x + i % Columns * cellW, cellY = y + i / Columns * GaugeHeight;
-                    var ring = new Rectangle(cellX + (cellW - ringD) / 2, cellY, ringD, ringD);
-                    double pct = row.RemainingPct(now);
-                    Fmt.Horseshoe(g, ring, S(4), pct, color, Track);
-                    TextRenderer.DrawText(g, Fmt.Pct(pct), bodyFont, new Rectangle(ring.X, ring.Y - S(1), ring.Width, ring.Height), Fg, center);
-                    int textY = cellY + ringD + S(6);
-                    TextRenderer.DrawText(g, row.Label, smallFont, new Rectangle(cellX, textY, cellW, S(16)), Dim, center);
-                    string reset = row.ResetsAt > 0 ? Fmt.Span(row.ResetsAt - now) : "";
-                    TextRenderer.DrawText(g, reset, smallFont, new Rectangle(cellX, textY + S(15), cellW, S(15)), Fg, center);
-                }
+                var box = new Rectangle(Pad, HeaderH, Width - 2 * Pad, content);
+                FillRounded(g, box, F(10), CardFill, Color.Empty);
+                TextRenderer.DrawText(g, "Waiting for data from omp\u2026", bodyFont, Rectangle.Inflate(box, -CardPad, 0), Tertiary, Line);
+            }
+            for (int i = 0; i < snap.Groups.Count; i++)
+            {
+                ProviderGroup group = snap.Groups[i];
+                DrawCard(g, group, new Rectangle(Pad + origins[i].X, HeaderH + origins[i].Y, CardW, CardHeight(group, now)), now);
+            }
+        }
+
+        void DrawHeader(Graphics g, long now)
+        {
+            int x = Pad + S(2), right = hits[0].X - S(10);
+            int titleW = Math.Min(TextRenderer.MeasureText(g, "omp usage", chromeFont, Size.Empty, TextFormatFlags.NoPadding).Width + S(2), right - x);
+            TextRenderer.DrawText(g, "omp usage", chromeFont, new Rectangle(x, S(8), titleW, S(28)), Secondary, Line);
+            if (snap.FetchedAt > 0)
+                TextRenderer.DrawText(g, "updated " + Fmt.Ago(now - snap.FetchedAt), smallFont, new Rectangle(x + titleW + S(8), S(8), right - x - titleW - S(8), S(28)), Tertiary, Line);
+
+            int selected = placeLeft && Centered() ? 0 : 1;
+            FillRounded(g, Rectangle.Inflate(Rectangle.Union(hits[0], hits[1]), S(2), S(2)), F(7), ControlFill, ControlStroke);
+            for (int i = 0; i < 2; i++)
+            {
+                bool enabled = HitEnabled(i), on = i == selected, hot = enabled && !on && hover == i;
+                if (on) FillRounded(g, hits[i], F(5), SelectedFill, Color.Empty);
+                else if (hot) FillRounded(g, hits[i], F(5), HoverFill, Color.Empty);
+                Color ink = !enabled ? Disabled : on ? accent : hot ? Secondary : Tertiary;
+                DrawPositionIcon(g, hits[i], ink, i == 0);
             }
 
-            int footerY = pad + contentHeight;
-            using (var edge = new Pen(Edge)) g.DrawLine(edge, pad, footerY, w - pad, footerY);
-            footerY += S(6);
-            string updated = "remaining quota" + (snap.FetchedAt > 0 ? " · updated " + Fmt.Ago(now - snap.FetchedAt) : "");
-            int count = SessionCount();
-            string sessions = count == 1 ? "1 omp process" : count + " omp processes";
-            TextRenderer.DrawText(g, updated, smallFont, new Rectangle(pad, footerY, w - 2 * pad, S(22)), Dim, left);
-            TextRenderer.DrawText(g, sessions, smallFont, new Rectangle(pad, footerY, w - 2 * pad, S(22)), Dim, right);
+            Rectangle close = hits[2];
+            bool closeHot = hover == 2;
+            if (closeHot) FillRounded(g, close, F(5), HoverFill, Color.Empty);
+            TextRenderer.DrawText(g, "\uE8BB", glyphFont, close, closeHot ? Primary : Secondary, Line | TextFormatFlags.HorizontalCenter);
+        }
+
+        void DrawPositionIcon(Graphics g, Rectangle button, Color ink, bool atLeft)
+        {
+            float w = F(16), h = F(10), x = button.X + (button.Width - w) / 2, y = button.Y + (button.Height - h) / 2, cy = y + h / 2;
+            using (var pen = new Pen(ink, F(1.3f)))
+            using (GraphicsPath frame = RoundedRect(new RectangleF(x, y, w, h), F(2.5f)))
+                g.DrawPath(pen, frame);
+            float m = F(4), mx = atLeft ? x + F(2.2f) : x + w - F(2.2f) - m;
+            FillRounded(g, new RectangleF(mx, cy - m / 2, m, m), F(1), ink, Color.Empty);
+        }
+
+        void DrawCard(Graphics g, ProviderGroup group, Rectangle r, long now)
+        {
+            FillRounded(g, r, F(12), CardFill, Color.Empty);
+            Color color = group.ColorOn(false);
+            bool shown = OnTaskbar(group);
+            int x = r.X + CardPad, y = r.Y + CardPad, inner = r.Width - 2 * CardPad;
+            Brand.Draw(g, group.Name, new RectangleF(x, y + F(3), F(16), F(16)), color);
+            int nameX = x + S(24);
+            int nameW = Math.Min(TextRenderer.MeasureText(g, group.Name, nameFont, Size.Empty, TextFormatFlags.NoPadding).Width + S(2), inner / 2);
+            TextRenderer.DrawText(g, group.Name, nameFont, new Rectangle(nameX, y, nameW, S(22)), Primary, Line);
+            int afterName = nameX + nameW + S(8);
+            if (!shown)
+            {
+                const string hidden = "not on taskbar";
+                int hiddenW = TextRenderer.MeasureText(g, hidden, smallFont, Size.Empty, TextFormatFlags.NoPadding).Width + S(2);
+                TextRenderer.DrawText(g, hidden, smallFont, new Rectangle(afterName, y + S(1), hiddenW, S(22)), color, Line);
+                afterName += hiddenW + S(10);
+            }
+            TextRenderer.DrawText(g, group.Account, smallFont, new Rectangle(afterName, y + S(1), x + inner - afterName, S(22)), Tertiary, Line | TextFormatFlags.Right);
+
+            y += S(22) + S(12);
+            LimitRow shortRow, longRow;
+            Fmt.Sides(group, now, out shortRow, out longRow);
+            if (shortRow != null) DrawSide(g, shortRow, x, y, false, shown, color, now);
+            if (longRow != null) DrawSide(g, longRow, x + inner, y, true, shown, color, now);
+            y += SideHeight(shown);
+
+            List<LimitRow> extras = Extras(group, now);
+            if (extras.Count == 0) return;
+            y += S(14);
+            TextRenderer.DrawText(g, "Other limits", smallStrongFont, new Rectangle(x, y, inner, S(16)), Tertiary, Line);
+            y += S(18);
+            int resetW = S(84), pctW = S(40), barW = S(36), resetX = x + inner - resetW, pctRight = resetX - S(10), barX = pctRight - pctW - S(8) - barW;
+            foreach (LimitRow row in extras)
+            {
+                double pct = row.RemainingPct(now);
+                TextRenderer.DrawText(g, row.Label, bodyFont, new Rectangle(x, y, barX - S(10) - x, ExtraH), Secondary, Line);
+                float bh = F(4), by = y + (ExtraH - bh) / 2;
+                FillRounded(g, new RectangleF(barX, by, barW, bh), bh / 2, BarTrack, Color.Empty);
+                float fill = (float)(barW * Math.Max(0, Math.Min(100, pct)) / 100);
+                if (fill > 0) FillRounded(g, new RectangleF(barX, by, Math.Max(bh, fill), bh), bh / 2, color, Color.Empty);
+                int top = y + (ExtraH - TextRenderer.MeasureText(g, "0", pctFont, Size.Empty, TextFormatFlags.NoPadding).Height) / 2;
+                DrawRun(g, pctRight, top, true, new Run(Fmt.Pct(pct).TrimEnd('%'), pctFont, Primary, 0), new Run("%", smallFont, Tertiary, 1));
+                TextRenderer.DrawText(g, Fmt.ResetsAt(row, now), smallFont, new Rectangle(resetX, y, resetW, ExtraH), Tertiary, Line | TextFormatFlags.Right);
+                y += ExtraH;
+            }
+        }
+
+        sealed class Run
+        {
+            public readonly string Text;
+            public readonly Font Font;
+            public readonly Color Color;
+            public readonly int GapBefore;
+            public Run(string text, Font font, Color color, int gapBefore) { Text = text; Font = font; Color = color; GapBefore = gapBefore; }
+        }
+
+        static float Ascent(Graphics g, Font font)
+        {
+            return font.FontFamily.GetCellAscent(font.Style) * font.GetHeight(g) / font.FontFamily.GetLineSpacing(font.Style);
+        }
+
+        void DrawRun(Graphics g, int edgeX, int top, bool alignRight, params Run[] runs)
+        {
+            const TextFormatFlags flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix;
+            Run[] parts = runs.Where(run => run.Text.Length > 0).ToArray();
+            if (parts.Length == 0) return;
+            var widths = parts.Select(run => TextRenderer.MeasureText(g, run.Text, run.Font, Size.Empty, flags).Width).ToArray();
+            int total = widths.Sum();
+            for (int i = 1; i < parts.Length; i++) total += S(parts[i].GapBefore);
+            float ascent = parts.Max(run => Ascent(g, run.Font));
+            int x = alignRight ? edgeX - total : edgeX;
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (i > 0) x += S(parts[i].GapBefore);
+                TextRenderer.DrawText(g, parts[i].Text, parts[i].Font, new Point(x, top + (int)Math.Round(ascent - Ascent(g, parts[i].Font))), parts[i].Color, flags);
+                x += widths[i];
+            }
+        }
+
+        static string PoolOf(LimitRow row)
+        {
+            string suffix = " " + row.Window;
+            return row.Label.EndsWith(suffix, StringComparison.Ordinal) ? row.Label.Substring(0, row.Label.Length - suffix.Length) : "";
+        }
+
+        void DrawSide(Graphics g, LimitRow row, int edgeX, int y, bool alignRight, bool shown, Color color, long now)
+        {
+            DrawRun(g, edgeX, y, alignRight, new Run(PoolOf(row), smallFont, Tertiary, 0), new Run(row.Window, smallStrongFont, color, 4),
+                new Run(shown && row.ResetsAt > now ? "resets" : "", smallFont, Tertiary, 4));
+            int top = y + S(16);
+            string day, time, suffix;
+            bool future = Fmt.ResetParts(row, now, out day, out time, out suffix);
+            if (shown)
+            {
+                if (future) DrawRun(g, edgeX, top, alignRight, new Run(day, bodyFont, Secondary, 0), new Run(time, bigFont, Primary, 5), new Run(suffix, smallFont, Tertiary, 3));
+                else DrawRun(g, edgeX, top, alignRight, new Run(row.ResetsAt > 0 ? "refilled" : "no reset time", bigFont, Secondary, 0));
+                return;
+            }
+            DrawRun(g, edgeX, top, alignRight, new Run(Fmt.Pct(row.RemainingPct(now)).TrimEnd('%'), bigFont, Primary, 0), new Run("%", bodyFont, Tertiary, 1));
+            string reset = Fmt.ResetsAt(row, now);
+            DrawRun(g, edgeX, top + BigH, alignRight, new Run(future ? "resets " + reset : reset, smallFont, Tertiary, 0));
+        }
+
+        static void FillRounded(Graphics g, RectangleF r, float radius, Color fill, Color stroke)
+        {
+            RectangleF box = stroke.IsEmpty ? r : RectangleF.Inflate(r, -0.5f, -0.5f);
+            using (GraphicsPath shape = RoundedRect(box, radius))
+            {
+                using (var brush = new SolidBrush(fill)) g.FillPath(brush, shape);
+                if (!stroke.IsEmpty) using (var pen = new Pen(stroke)) g.DrawPath(pen, shape);
+            }
+        }
+
+        static GraphicsPath RoundedRect(RectangleF r, float radius)
+        {
+            float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
+            var path = new GraphicsPath();
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int hit = Hit(e.Location);
+            if (hit == hover) return;
+            hover = hit;
+            Cursor = hit >= 0 && HitEnabled(hit) ? Cursors.Hand : Cursors.Default;
+            tip.SetToolTip(this, hit >= 0 ? TipFor(hit) : null);
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (hover < 0) return;
+            hover = -1;
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            int hit = e.Button == MouseButtons.Left ? Hit(e.Location) : -1;
+            if (hit == 2) { Hide(); return; }
+            if (hit < 0 || !HitEnabled(hit) || PositionPicked == null) return;
+            PositionPicked(hit == 0);
         }
 
         protected override void Dispose(bool disposing)
@@ -413,17 +976,18 @@ namespace OmpUsageTray
             if (disposing)
             {
                 clock.Dispose();
-                headerFont.Dispose();
-                bodyFont.Dispose();
-                smallFont.Dispose();
+                tip.Dispose();
+                foreach (Font font in new[] { chromeFont, nameFont, bodyFont, smallFont, smallStrongFont, bigFont, pctFont, glyphFont })
+                    font.Dispose();
             }
             base.Dispose(disposing);
         }
     }
 
     /// <summary>
-    /// Per-pixel-alpha child window inside the taskbar (Shell_TrayWnd), left of the tray area.
-    /// As a taskbar child it hides with the taskbar in fullscreen apps and never covers other windows.
+    /// Per-pixel-alpha child window inside the taskbar (Shell_TrayWnd), left of the tray area or, on a centered
+    /// taskbar, optionally at the left edge. As a taskbar child it hides with the taskbar in fullscreen apps and
+    /// never covers other windows.
     /// </summary>
     sealed class TaskbarStrip : NativeWindow
     {
@@ -434,7 +998,10 @@ namespace OmpUsageTray
         const int SW_HIDE = 0;
 
         readonly float scale;
-        readonly Font nameFont, rowPctFont, ringPctFont, resetFont;
+        readonly Font numberFont, percentFont, labelFont;
+        readonly Bitmap probe = new Bitmap(1, 1);
+        readonly Graphics measure;
+        readonly StringFormat typographic = (StringFormat)StringFormat.GenericTypographic.Clone();
         Snapshot snap = new Snapshot();
         IntPtr parent = IntPtr.Zero;
         Rectangle bounds = Rectangle.Empty;
@@ -446,54 +1013,86 @@ namespace OmpUsageTray
         public TaskbarStrip(float dpi)
         {
             scale = dpi / 96f;
-            nameFont = new Font("Segoe UI Semibold", S(11), GraphicsUnit.Pixel);
-            rowPctFont = new Font("Segoe UI Semibold", S(10), GraphicsUnit.Pixel);
-            ringPctFont = new Font("Segoe UI Semibold", S(9), GraphicsUnit.Pixel);
-            resetFont = new Font("Segoe UI", S(10), GraphicsUnit.Pixel);
+            numberFont = Fmt.Pick("Segoe UI Variable Display Semib", "Segoe UI Semibold", 13 * scale, GraphicsUnit.Pixel);
+            percentFont = Fmt.Pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold", 10 * scale, GraphicsUnit.Pixel);
+            labelFont = Fmt.Pick("Segoe UI Variable Text", "Segoe UI", 11 * scale, GraphicsUnit.Pixel);
+            measure = Graphics.FromImage(probe);
         }
 
         int S(float px) { return (int)Math.Round(px * scale); }
 
-        const int MaxGaugesPerProvider = 2;
-        int ProviderGap { get { return S(14); } }
-        int LineHeight { get { return S(13); } }
+        int ProviderGap { get { return S(12); } }
+        int GaugeSize { get { return S(32); } }
+        int ColumnGap { get { return S(3); } }
+        int NumberH { get { return S(16); } }
+        int LabelH { get { return S(13); } }
 
-        // Nested: outer ring = shortest window (5h), inner ring = next one (7d); text column beside it.
-        int NestedRing { get { return S(34); } }
-        int NestedTextX { get { return NestedRing + S(7); } }
-        int NestedTextW { get { return S(80); } }
-        int NestedPctW { get { return S(33); } }
-
-        // Minimal: one small ring per window under the provider name.
-        int SideRing { get { return S(24); } }
-        int SideCell { get { return S(36); } }
-
-        /// <summary>Layout the user picked; persisted by the tray context. Minimal is the default.</summary>
-        public bool PreferNested { get; private set; }
-        // What actually fits right now: Sync falls back to Minimal and then drops providers.
-        bool nested;
+        /// <summary>Position the user picked; persisted by the tray context. Right is the default.</summary>
+        public bool PlaceLeft { get; private set; }
+        // What actually fits right now: Sync drops the providers with the most quota left.
         List<ProviderGroup> visible = new List<ProviderGroup>();
         string layoutKey = "";
         // Taskbar geometry the current fit was computed for; the slow timer skips all work while it holds.
         Native.RECT lastTaskbar, lastTray, lastStart, lastRebar;
 
-        public void SetLayout(bool preferNested)
+        public void SetPosition(bool placeLeft)
         {
-            PreferNested = preferNested;
+            PlaceLeft = placeLeft;
             Sync(true);
         }
 
-        int ProviderWidth(ProviderGroup group, bool nestedLayout, long now)
+        public bool Shows(ProviderGroup group)
         {
-            if (nestedLayout) return NestedTextX + NestedTextW;
-            int n = Math.Min(MaxGaugesPerProvider, group.ByWindow(now).Count);
-            return Math.Max(S(64), n * SideCell + Math.Max(0, n - 1) * S(2));
+            return shown && visible.Contains(group);
         }
 
-        int WidthFor(List<ProviderGroup> groups, bool nestedLayout, long now)
+        /// <summary>The providers that fit into <paramref name="room"/> pixels: the ones with the most quota left go first.</summary>
+        public List<ProviderGroup> Fit(List<ProviderGroup> all, int room, long now)
+        {
+            var groups = new List<ProviderGroup>(all);
+            while (groups.Count > 0 && WidthFor(groups, now) > room)
+            {
+                int roomiest = 0;
+                for (int i = 1; i < groups.Count; i++)
+                    if (groups[i].MinRemaining(now) > groups[roomiest].MinRemaining(now)) roomiest = i;
+                groups.RemoveAt(roomiest);
+            }
+            return groups;
+        }
+
+        int SideWidth(LimitRow row, long now)
+        {
+            if (row == null) return 0;
+            float label = Width(Fmt.Countdown(row, now), labelFont);
+            return (int)Math.Ceiling(Math.Max(NumberWidth(row, now), label)) + S(1);
+        }
+
+        float Width(string text, Font font)
+        {
+            return measure.MeasureString(text, font, PointF.Empty, typographic).Width;
+        }
+
+        float NumberWidth(LimitRow row, long now)
+        {
+            return Width(Fmt.Pct(row.RemainingPct(now)).TrimEnd('%'), numberFont) + Width("%", percentFont);
+        }
+
+        static float Ascent(Font font)
+        {
+            return font.Size * font.FontFamily.GetCellAscent(font.Style) / font.FontFamily.GetEmHeight(font.Style);
+        }
+
+        int ProviderWidth(ProviderGroup group, long now)
+        {
+            LimitRow shortRow, longRow;
+            Fmt.Sides(group, now, out shortRow, out longRow);
+            return GaugeSize + (shortRow != null ? SideWidth(shortRow, now) + ColumnGap : 0) + (longRow != null ? SideWidth(longRow, now) + ColumnGap : 0);
+        }
+
+        int WidthFor(List<ProviderGroup> groups, long now)
         {
             int w = S(4) * 2 + Math.Max(0, groups.Count - 1) * ProviderGap;
-            foreach (ProviderGroup group in groups) w += ProviderWidth(group, nestedLayout, now);
+            foreach (ProviderGroup group in groups) w += ProviderWidth(group, now);
             return w;
         }
 
@@ -535,42 +1134,24 @@ namespace OmpUsageTray
             lastStart = startRect;
             lastRebar = rebarRect;
 
-            int h = tb.Bottom - tb.Top;
-            int right = tray.Left - tb.Left - S(16), left = 0;
-            if (hasStart && CenteredTaskbar()) left = tb.Right - startRect.Left + S(8);
-            else if (hasRebar) left = rebarRect.Right - tb.Left + S(8);
+            int h = tb.Bottom - tb.Top, left, right;
+            bool atLeft = FreeSpace(tb, tray, startRect, hasStart, rebarRect, hasRebar, CenteredTaskbar(), WidgetsButton(), out left, out right);
 
-            // Fit into the free space: preferred layout, then Minimal, then drop the providers with the most quota left.
             long now = Snapshot.Now();
-            var groups = new List<ProviderGroup>(snap.Groups);
-            bool useNested = PreferNested;
-            int w = WidthFor(groups, useNested, now);
-            while (groups.Count > 0 && w > right - left)
-            {
-                if (useNested) useNested = false;
-                else
-                {
-                    int roomiest = 0;
-                    for (int i = 1; i < groups.Count; i++)
-                        if (groups[i].MinRemaining(now) > groups[roomiest].MinRemaining(now)) roomiest = i;
-                    groups.RemoveAt(roomiest);
-                }
-                w = WidthFor(groups, useNested, now);
-            }
+            List<ProviderGroup> groups = Fit(snap.Groups, right - left, now);
+            int w = WidthFor(groups, now);
             if (groups.Count == 0)
             {
                 Hide();
                 return;
             }
 
-            var key = new StringBuilder(useNested ? "nested" : "minimal");
-            foreach (ProviderGroup group in groups) key.Append('|').Append(group.Name);
-            bool layoutChanged = key.ToString() != layoutKey;
-            nested = useNested;
+            string key = string.Join("|", groups.Select(group => group.Name));
+            bool layoutChanged = key != layoutKey;
             visible = groups;
-            layoutKey = key.ToString();
+            layoutKey = key;
 
-            var next = new Rectangle(right - w, 0, w, h);
+            var next = new Rectangle(atLeft ? left : right - w, 0, w, h);
             if (next == bounds && shown && !layoutChanged)
             {
                 if (refit) Render();
@@ -588,10 +1169,34 @@ namespace OmpUsageTray
             return a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom;
         }
 
+        bool FreeSpace(Native.RECT tb, Native.RECT tray, Native.RECT startRect, bool hasStart, Native.RECT rebarRect, bool hasRebar,
+            bool centeredSetting, bool widgets, out int left, out int right)
+        {
+            bool centered = hasStart && centeredSetting, atLeft = PlaceLeft && centered;
+            right = tray.Left - tb.Left - S(16);
+            left = 0;
+            if (atLeft)
+            {
+                left = S(8) + (widgets ? S(160) : 0);
+                right = startRect.Left - tb.Left - S(8);
+            }
+            else if (centered) left = tb.Right - startRect.Left + S(8);
+            else if (hasRebar) left = rebarRect.Right - tb.Left + S(8);
+            return atLeft;
+        }
+
         /// <summary>Windows 11 taskbar alignment; missing value means the default, centered.</summary>
-        static bool CenteredTaskbar()
+        public static bool CenteredTaskbar()
         {
             object value = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarAl", 1);
+            return !(value is int) || (int)value != 0;
+        }
+
+        static bool WidgetsButton()
+        {
+            object policy = Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Dsh", "AllowNewsAndInterests", 1);
+            if (policy is int && (int)policy == 0) return false;
+            object value = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarDa", 1);
             return !(value is int) || (int)value != 0;
         }
 
@@ -623,74 +1228,66 @@ namespace OmpUsageTray
         public void Render()
         {
             if (Handle == IntPtr.Zero || bounds.IsEmpty) return;
+            using (var bmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp)) Paint(g, bmp.Height);
+                Present(bmp);
+            }
+        }
+
+        void Paint(Graphics g, int h)
+        {
             long now = Snapshot.Now();
             bool light = Fmt.LightTaskbar();
             Color text = light ? Color.FromArgb(235, 0, 0, 0) : Color.FromArgb(245, 255, 255, 255);
-            Color dim = light ? Color.FromArgb(150, 0, 0, 0) : Color.FromArgb(170, 255, 255, 255);
-            Color trackColor = light ? Color.FromArgb(40, 0, 0, 0) : Color.FromArgb(50, 255, 255, 255);
+            Color dim = light ? Color.FromArgb(130, 0, 0, 0) : Color.FromArgb(140, 255, 255, 255);
 
-            using (var bmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb))
+            using (var textBrush = new SolidBrush(text))
+            using (var dimBrush = new SolidBrush(dim))
             {
-                using (Graphics g = Graphics.FromImage(bmp))
-                using (var textBrush = new SolidBrush(text))
-                using (var dimBrush = new SolidBrush(dim))
-                using (var leftFmt = new StringFormat(StringFormatFlags.NoWrap) { LineAlignment = StringAlignment.Center })
-                using (var centerFmt = new StringFormat(StringFormatFlags.NoWrap) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                // Alpha 1 is invisible but keeps the whole strip clickable.
+                g.Clear(Color.FromArgb(1, 0, 0, 0));
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                int x = S(4), top = (h - NumberH - LabelH) / 2;
+                float d = GaugeSize, icon = S(14);
+                foreach (ProviderGroup group in visible)
                 {
-                    // Alpha 1 is invisible but keeps the whole strip clickable.
-                    g.Clear(Color.FromArgb(1, 0, 0, 0));
-                    g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                    int x = S(4), h = bounds.Height, lineH = LineHeight;
-                    foreach (ProviderGroup group in visible)
+                    Color color = group.ColorOn(light);
+                    LimitRow shortRow, longRow;
+                    Fmt.Sides(group, now, out shortRow, out longRow);
+                    if (shortRow != null)
                     {
-                        Color color = group.ColorOn(light);
-                        List<LimitRow> windows = group.ByWindow(now);
-                        int count = Math.Min(MaxGaugesPerProvider, windows.Count);
-                        using (var colorBrush = new SolidBrush(color))
-                        {
-                            if (nested)
-                            {
-                                float stroke = 3 * scale;
-                                var ring = new RectangleF(x, (h - NestedRing) / 2f, NestedRing, NestedRing);
-                                for (int i = 0; i < count; i++)
-                                {
-                                    Fmt.Horseshoe(g, ring, stroke, windows[i].RemainingPct(now), color, trackColor);
-                                    ring = RectangleF.Inflate(ring, -(stroke + 2.5f * scale), -(stroke + 2.5f * scale));
-                                }
-                                // Line order matches ring order: outer ring first.
-                                int tx = x + NestedTextX, ty = (h - lineH * 3) / 2;
-                                g.DrawString(group.Name, nameFont, colorBrush, new RectangleF(tx, ty, NestedTextW, lineH), leftFmt);
-                                for (int i = 0; i < count; i++)
-                                {
-                                    LimitRow row = windows[i];
-                                    int y = ty + lineH * (i + 1);
-                                    g.DrawString(Fmt.Pct(row.RemainingPct(now)), rowPctFont, textBrush, new RectangleF(tx, y, NestedPctW, lineH), leftFmt);
-                                    string reset = row.ResetsAt > 0 ? Fmt.Span(row.ResetsAt - now) : row.Window;
-                                    g.DrawString(reset, resetFont, dimBrush, new RectangleF(tx + NestedPctW, y, NestedTextW - NestedPctW, lineH), leftFmt);
-                                }
-                            }
-                            else
-                            {
-                                int ringY = S(1) + lineH;
-                                g.DrawString(group.Name, nameFont, colorBrush, new RectangleF(x, S(1), ProviderWidth(group, false, now), lineH), leftFmt);
-                                for (int i = 0; i < count; i++)
-                                {
-                                    LimitRow row = windows[i];
-                                    int cellX = x + i * (SideCell + S(2));
-                                    double pct = row.RemainingPct(now);
-                                    var ring = new RectangleF(cellX + (SideCell - SideRing) / 2f, ringY, SideRing, SideRing);
-                                    Fmt.Horseshoe(g, ring, 2.5f * scale, pct, color, trackColor);
-                                    g.DrawString(Fmt.Pct(pct).TrimEnd('%'), ringPctFont, textBrush, ring, centerFmt);
-                                    string reset = row.ResetsAt > 0 ? Fmt.Span(row.ResetsAt - now) : row.Window;
-                                    g.DrawString(reset, resetFont, dimBrush, new RectangleF(cellX - S(4), ringY + SideRing - S(3), SideCell + S(8), S(12)), centerFmt);
-                                }
-                            }
-                        }
-                        x += ProviderWidth(group, nested, now) + ProviderGap;
+                        int w = SideWidth(shortRow, now);
+                        DrawValue(g, shortRow, now, x, top, w, true, textBrush, dimBrush);
+                        x += w + ColumnGap;
                     }
+                    var box = new RectangleF(x, (h - d) / 2f, d, d);
+                    Gauge.Brackets(g, box, 3.25f * scale, Gauge.Remaining(shortRow, now), Gauge.Remaining(longRow, now), color, Color.FromArgb(44, color));
+                    Brand.Draw(g, group.Name, new RectangleF(x + (d - icon) / 2, (h - icon) / 2f, icon, icon), color);
+                    x += GaugeSize;
+                    if (longRow != null)
+                    {
+                        int w = SideWidth(longRow, now);
+                        x += ColumnGap;
+                        DrawValue(g, longRow, now, x, top, w, false, textBrush, dimBrush);
+                        x += w;
+                    }
+                    x += ProviderGap;
                 }
-                Present(bmp);
             }
+        }
+
+        void DrawValue(Graphics g, LimitRow row, long now, float x, float top, float width, bool alignRight, Brush number, Brush dim)
+        {
+            StringFormat format = typographic;
+            string digits = Fmt.Pct(row.RemainingPct(now)).TrimEnd('%');
+            float nx = alignRight ? x + width - NumberWidth(row, now) : x, baseline = top + S(1) + Ascent(numberFont);
+            g.DrawString(digits, numberFont, number, nx, baseline - Ascent(numberFont), format);
+            g.DrawString("%", percentFont, dim, nx + Width(digits, numberFont), baseline - Ascent(percentFont), format);
+            string countdown = Fmt.Countdown(row, now);
+            float cx = alignRight ? x + width - Width(countdown, labelFont) : x;
+            g.DrawString(countdown, labelFont, dim, cx, top + NumberH, format);
         }
 
         void Present(Bitmap bmp)
@@ -735,10 +1332,12 @@ namespace OmpUsageTray
         public void Dispose()
         {
             if (Handle != IntPtr.Zero) DestroyHandle();
-            nameFont.Dispose();
-            rowPctFont.Dispose();
-            ringPctFont.Dispose();
-            resetFont.Dispose();
+            numberFont.Dispose();
+            percentFont.Dispose();
+            labelFont.Dispose();
+            typographic.Dispose();
+            measure.Dispose();
+            probe.Dispose();
         }
     }
 
@@ -774,15 +1373,16 @@ namespace OmpUsageTray
             Directory.CreateDirectory(sessionsDir);
 
             IntPtr forceHandle = popup.Handle; // watchers and process events marshal through it
-            popup.SessionCount = () => sessions.Count;
 
             using (Graphics g = Graphics.FromHwnd(IntPtr.Zero)) strip = new TaskbarStrip(g.DpiX);
             layoutFile = Path.Combine(root, "layout.txt");
-            bool preferNested = false;
-            try { preferNested = File.ReadAllText(layoutFile).Trim() == "nested"; }
+            bool placeLeft = false;
+            try { placeLeft = File.ReadAllText(layoutFile).Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Contains("left"); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
-            strip.SetLayout(preferNested);
+            strip.SetPosition(placeLeft);
+            popup.SetPosition(placeLeft);
+            popup.PositionPicked += SavePosition;
 
             menuOwner.CreateHandle(new CreateParams { Caption = "omp-usage-menu", ExStyle = 0x80 /* WS_EX_TOOLWINDOW */ });
             try
@@ -798,6 +1398,7 @@ namespace OmpUsageTray
                 if (e.Button == MouseButtons.Left) popup.Toggle();
                 else if (e.Button == MouseButtons.Right) ShowMenu();
             };
+            popup.OnTaskbar = strip.Shows;
             strip.LeftClick += (s, e) => popup.Toggle();
             strip.RightClick += (s, e) => ShowMenu();
             // The taskbar re-lays out when tray icons change or explorer restarts; follow it cheaply.
@@ -874,18 +1475,27 @@ namespace OmpUsageTray
             Native.SetProcessWorkingSetSize(Native.GetCurrentProcess(), (IntPtr)(-1), (IntPtr)(-1));
         }
 
-        void ShowMenu()
+        const int CmdDetails = 1, CmdLeft = 2, CmdRight = 3, CmdQuit = 4;
+
+        public static IntPtr BuildMenu(bool placeLeft, bool centered)
         {
-            const uint MF_STRING = 0, MF_CHECKED = 0x8, MF_SEPARATOR = 0x800;
-            const uint TPM_RIGHTBUTTON = 0x2, TPM_BOTTOMALIGN = 0x20, TPM_RETURNCMD = 0x100;
-            const int CmdDetails = 1, CmdMinimal = 2, CmdNested = 3, CmdQuit = 4;
+            const uint MF_STRING = 0, MF_GRAYED = 0x1, MF_CHECKED = 0x8, MF_SEPARATOR = 0x800;
+            bool atLeft = placeLeft && centered;
             IntPtr menu = Native.CreatePopupMenu();
             Native.AppendMenu(menu, MF_STRING, (UIntPtr)CmdDetails, "Details");
             Native.AppendMenu(menu, MF_SEPARATOR, UIntPtr.Zero, null);
-            Native.AppendMenu(menu, MF_STRING | (strip.PreferNested ? 0 : MF_CHECKED), (UIntPtr)CmdMinimal, "Minimal");
-            Native.AppendMenu(menu, MF_STRING | (strip.PreferNested ? MF_CHECKED : 0), (UIntPtr)CmdNested, "Nested");
+            Native.AppendMenu(menu, MF_STRING | MF_GRAYED, UIntPtr.Zero, "Taskbar position");
+            Native.AppendMenu(menu, MF_STRING | (atLeft ? MF_CHECKED : 0) | (centered ? 0 : MF_GRAYED), (UIntPtr)CmdLeft, "Left");
+            Native.AppendMenu(menu, MF_STRING | (atLeft ? 0 : MF_CHECKED), (UIntPtr)CmdRight, "Right");
             Native.AppendMenu(menu, MF_SEPARATOR, UIntPtr.Zero, null);
             Native.AppendMenu(menu, MF_STRING, (UIntPtr)CmdQuit, "Quit");
+            return menu;
+        }
+
+        void ShowMenu()
+        {
+            const uint TPM_RIGHTBUTTON = 0x2, TPM_BOTTOMALIGN = 0x20, TPM_RETURNCMD = 0x100;
+            IntPtr menu = BuildMenu(strip.PlaceLeft, TaskbarStrip.CenteredTaskbar());
             Point at = Cursor.Position;
             // A popup menu closes on outside clicks only while its owner is the foreground window;
             // WM_NULL afterwards is the documented companion so the next open works too.
@@ -898,12 +1508,9 @@ namespace OmpUsageTray
                 case CmdDetails:
                     popup.ShowNearCursor();
                     break;
-                case CmdMinimal:
-                case CmdNested:
-                    strip.SetLayout(cmd == CmdNested);
-                    try { File.WriteAllText(layoutFile, cmd == CmdNested ? "nested" : "minimal"); }
-                    catch (IOException) { }
-                    catch (UnauthorizedAccessException) { }
+                case CmdLeft:
+                case CmdRight:
+                    SavePosition(cmd == CmdLeft);
                     break;
                 case CmdQuit:
                     UserQuit = true;
@@ -911,6 +1518,15 @@ namespace OmpUsageTray
                     return;
             }
             ScheduleTrim();
+        }
+
+        void SavePosition(bool placeLeft)
+        {
+            strip.SetPosition(placeLeft);
+            popup.SetPosition(placeLeft);
+            try { File.WriteAllText(layoutFile, placeLeft ? "left" : "right"); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
 
         void OnPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
@@ -1003,7 +1619,7 @@ namespace OmpUsageTray
             ScheduleTrim();
         }
 
-        /// <summary>One horseshoe for the most-constrained window across providers, in that provider's color.</summary>
+        /// <summary>Brackets (short window left, long window right) of the provider closest to a limit, in its color.</summary>
         void UpdateIcon()
         {
             long now = Snapshot.Now();
@@ -1026,8 +1642,16 @@ namespace OmpUsageTray
             }
             string text = tip.Length > 0 ? tip.Append(" left").ToString() : "omp usage: waiting for data";
             if (text.Length > 63) text = text.Substring(0, 63); // NotifyIcon rejects longer text
+            double left = 0, right = 0;
+            if (tightestGroup != null)
+            {
+                LimitRow shortRow, longRow;
+                Fmt.Sides(tightestGroup, now, out shortRow, out longRow);
+                left = Gauge.Remaining(shortRow, now);
+                right = Gauge.Remaining(longRow, now);
+            }
             // Most refreshes change nothing the icon shows; skip the bitmap and HICON churn then.
-            string key = text + "\0" + light + "\0" + size + "\0" + (tightestGroup != null ? tightestGroup.Name + "\0" + Math.Round(tightest) : "");
+            string key = text + "\0" + light + "\0" + size + "\0" + (tightestGroup != null ? tightestGroup.Name : "") + "\0" + Math.Round(left) + "\0" + Math.Round(right);
             if (key == iconKey) return;
             iconKey = key;
 
@@ -1039,7 +1663,7 @@ namespace OmpUsageTray
                     g.Clear(Color.Transparent);
                     float stroke = Math.Max(2f, size / 6f);
                     Color color = tightestGroup != null ? tightestGroup.ColorOn(light) : trackColor;
-                    Fmt.Horseshoe(g, new RectangleF(0.5f, 0.5f, size - 1, size - 1), stroke, tightestGroup != null ? tightest : 0, color, trackColor);
+                    Gauge.Brackets(g, new RectangleF(0.5f, 0.5f, size - 1, size - 1), stroke, left, right, color, trackColor);
                 }
                 handle = bmp.GetHicon();
             }
