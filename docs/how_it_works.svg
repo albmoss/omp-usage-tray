@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="270" viewBox="0 0 880 270">
+  <title>How omp usage tray works</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4c8dff"/>
+    </marker>
+    <marker id="arrow-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8a8a8a"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; }
+    .card { fill: #2b2b2b; stroke: #3d3d3d; stroke-width: 1; }
+    .title { fill: #f2f2f2; font-size: 16px; font-weight: 600; }
+    .sub { fill: #a8a8a8; font-size: 13px; }
+    .mono { fill: #a8a8a8; font-size: 12px; font-family: Consolas, "SF Mono", Menlo, monospace; }
+    .label { fill: #cfcfcf; font-size: 12px; }
+    .note { fill: #8a8a8a; font-size: 12px; }
+  </style>
+
+  <rect width="880" height="270" rx="14" fill="#1c1c1c"/>
+
+  <rect class="card" x="30" y="40" width="220" height="120" rx="10"/>
+  <text class="title" x="140" y="84" text-anchor="middle">omp sessions</text>
+  <text class="mono" x="140" y="110" text-anchor="middle">usage-tray.ts</text>
+  <text class="sub" x="140" y="132" text-anchor="middle">extension in every session</text>
+
+  <rect class="card" x="330" y="40" width="220" height="120" rx="10"/>
+  <text class="title" x="440" y="84" text-anchor="middle">Data directory</text>
+  <text class="mono" x="440" y="110" text-anchor="middle">%LOCALAPPDATA%\omp-usage-tray</text>
+  <text class="mono" x="440" y="132" text-anchor="middle">usage.tsv, sessions\&lt;pid&gt;</text>
+
+  <rect class="card" x="630" y="40" width="220" height="120" rx="10"/>
+  <text class="title" x="740" y="84" text-anchor="middle">omp-usage-tray.exe</text>
+  <text class="sub" x="740" y="110" text-anchor="middle">taskbar strip, tray icon</text>
+  <text class="sub" x="740" y="132" text-anchor="middle">Details popup</text>
+
+  <line x1="254" y1="100" x2="324" y2="100" stroke="#4c8dff" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="label" x="290" y="88" text-anchor="middle">writes</text>
+
+  <line x1="554" y1="100" x2="624" y2="100" stroke="#4c8dff" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="label" x="590" y="88" text-anchor="middle">notifies</text>
+
+  <path d="M140 164 V205 H740 V170" fill="none" stroke="#8a8a8a" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#arrow-dim)"/>
+  <text class="note" x="440" y="232" text-anchor="middle">starts the widget; the widget exits 5 s after the last omp process ends</text>
+</svg>
